@@ -1,12 +1,15 @@
 //todo
-// disable air jump when falls of the edge
-// add clouds
+// disable air jump when falls of the edge - actually its a feature
+// add clouds - done
 // add menu/game over screen - done
-// make clouds kill
-// background moving slower than tiles - done / waiting for fix
+// make clouds kill player - done
+// background moving slower than tiles - done
 // clean duplications - done
 // bfs crashes on jump over map - done
 // bfs crashes when i need to move back - done
+// add spikes to some tiles
+// only top tiles should be grass
+
 
 #include <SFML/Graphics.hpp>
 #include <cmath>
@@ -32,14 +35,15 @@ struct Tile {
     Sprite sprite;
 };
 
-struct Cloud {
-    int x;
+struct EnemyMace {
     int y;
     Sprite sprite;
+    bool isFalling = false;
 };
 
 auto main() -> int
 {
+    srand(time(nullptr));
     unsigned int const WIDTH = 960;
     unsigned int const HEIGHT = 640;
     unsigned int const TILE_SIZE = 64;
@@ -55,7 +59,13 @@ auto main() -> int
     window.setFramerateLimit(60);
 
     auto const backgroundTexture = Texture("assets/Background.png");
-    auto const backgroundSprite = Sprite(backgroundTexture);
+    auto backgroundSprite = Sprite(backgroundTexture);
+    backgroundSprite.setScale(
+        {
+            WIDTH / backgroundSprite.getLocalBounds().size.x,
+            HEIGHT / backgroundSprite.getLocalBounds().size.y
+        }
+    );
 
     auto const playerTexture = Texture("assets/character.png"); // 168x210
     auto playerSprite = Sprite(playerTexture);
@@ -74,23 +84,12 @@ auto main() -> int
         {0.2f, 0.2f}
     );
 
-    auto const cloud1Texture = Texture("assets/cloud1.png"); //128x128
-    auto const cloud2Texture = Texture("assets/cloud2.png"); //128x128
-
-    auto cloud1Sprite = Sprite(cloud1Texture);
-    auto cloud2Sprite = Sprite(cloud2Texture);
-
-    cloud1Sprite.setOrigin(
+    auto const enemyMaceTexture = Texture("assets/mace.png"); //128x128
+    auto enemyMaceSprite = Sprite(enemyMaceTexture);
+    enemyMaceSprite.setScale(
         {
-            128.f,
-            0.f
-        }
-    );
-
-    cloud2Sprite.setOrigin(
-        {
-            128.f,
-            0.f
+            static_cast<float>(2 * TILE_SIZE) / 128.f,
+            static_cast<float>(2 * TILE_SIZE) / 128.f
         }
     );
 
@@ -111,11 +110,20 @@ auto main() -> int
             static_cast<float>(TILE_SIZE) / 128.f
         }
     );
+
+    auto const fogTexture = Texture("assets/fog.png"); // 1920x1080
+    auto fogSprite = Sprite(fogTexture);
+    fogSprite.setScale(
+        {
+            WIDTH / fogSprite.getLocalBounds().size.x,
+            HEIGHT / fogSprite.getLocalBounds().size.y
+        }
+    );
     
     float gamePosition = 0.0f;
 
     float fogPosition = 0.0f;
-    float fogSpeed = 1.00f;
+    float fogSpeed = 3.00f;
  
     float moveSpeed = 6.0f;
     float gravity = 0.5f;
@@ -128,7 +136,10 @@ auto main() -> int
 
     float speedMultiplier = 50.0f;
 
+    float enemySpeed = 5.0f;
+
     bool isMenu = true;
+    bool disableFog = true;
     
     Font font("assets/oswald.ttf");
     Text menuText(font);
@@ -163,15 +174,17 @@ auto main() -> int
 
     Movement moving;
     Clock clock;
-
+    Time elapsed;
     //Skalowanie do wielkości okna, to sie robi automatycznie
     // View view (FloatRect({0.f, 0.f}, {WIDTH, HEIGHT}));
     // view.setViewport(FloatRect({0.f, 0.f}, {1.f, 1.f}));
     // window.setView(view);
 
     map<int, vector<Tile>> tiles;
-    vector<Cloud> clouds;
     vector<pair<int, int>> circles;
+    map<int, vector<EnemyMace>> enemies;
+    // bo jak wyskakiwalem z mapy to był przypał
+    pair<int, int> lastReachablePosition = {50, 3};
 
     auto addTile = [&](int x, int y, Sprite sprite)
     {
@@ -197,14 +210,6 @@ auto main() -> int
         }
     }
     file.close();
-
-
-    auto addCloud = [&](int x, int y, Sprite sprite)
-    {
-        clouds.push_back({x, y, sprite});
-    };
-
-
 
     auto drawTiles = [&]()
     {
@@ -245,6 +250,123 @@ auto main() -> int
                 );
             }
         }
+    };
+
+       auto clearTilesX = [&](int x)
+    {
+        tiles.erase(x);
+    };
+
+    auto generateNextX = [&](int x)
+    {
+        cout << "Generating next x: " << x << endl;
+        clearTilesX(x);
+
+        if (rand() % 10  == 0) {
+            enemies[x].push_back({0, enemyMaceSprite, false});
+            clearTilesX(x + 1); //wyczysc następną kolumnę
+        };
+
+        if (
+            enemies.find(x) != enemies.end() ||  //jeśli ta kolumna jest w mapie
+            enemies.find(x - 1) != enemies.end()) { //jesli poprzednia kolumna jest w mapie
+            return;
+        }
+
+        for (int i = 0; i < 10; i++) {
+            int random = rand() % 2;
+            if (random == 0) {
+                addTile(x, i, grassTileSprite);
+            }
+        }
+    };
+    
+    auto resetEnemiesPositions = [&]()
+    {
+        for (auto& [x, enemy] : enemies) {
+            for (auto& e : enemy) {
+                e.sprite.setPosition({static_cast<float>(x * TILE_SIZE - gamePosition), 0});
+                e.isFalling = false;
+            }
+        }
+    };
+
+    //https://www.geeksforgeeks.org/breadth-first-search-or-bfs-for-a-graph/
+    auto canReach = [&](int reachX)
+    {
+        auto [playerX, playerY] = lastReachablePosition;
+        cout << "Player position: " << playerX << ", " << playerY << endl;
+        
+        // Make visited array large enough and initialize with false
+        int minX = min(reachX, playerX) - 5;  // Add buffer on both sides
+        int maxX = max(reachX, playerX) + 5;
+        int arraySize = maxX - minX + 10;
+        vector<vector<bool>> visited(arraySize, vector<bool>(15, false));
+        
+        queue<pair<int, int>> q;
+        q.push({playerX, playerY});
+        visited[playerX - minX][playerY] = true;
+
+        while (!q.empty()) {
+            auto [x, y] = q.front();
+            q.pop();
+            
+            if (x == reachX) {
+                cout << "Reached x: " << x << " y: " << y << endl;
+                circles.push_back({x, y});
+                lastReachablePosition = {x, y};
+                return true;
+            }
+
+            // Check all adjacent positions including backwards
+            vector<pair<int, int>> moves = {
+                {1, 0},   // right
+                {-1, 0},  // left
+                {0, 1},   // up
+                {0, -1}   // down
+            };
+
+            for (auto [dx, dy] : moves) {
+                int nx = x + dx;
+                int ny = y + dy;
+
+                // Check bounds
+                if (nx < minX || nx > maxX || ny <= 0 || ny >= 10) {
+                    continue;
+                }
+                
+                // Skip if already visited
+                if (visited[nx - minX][ny]) {
+                    continue;
+                }
+
+                // Check if position is blocked by a tile
+                bool isTile = false;
+                for (auto& tile : tiles[nx]) {
+                    if (tile.y == ny) {
+                        isTile = true;
+                        break;
+                    }
+                }
+
+                bool isEnemy = false;
+                if (enemies.find(nx) != enemies.end() || enemies.find(nx - 1) != enemies.end()) {
+                    if (ny >= 8 && ny <= 10) {
+                        isEnemy = true;
+                        cout << "Enemy found at " << nx << endl;
+                        break;
+                    }
+                }
+                // If position is free, add to queue
+                if (!isTile && !isEnemy) {
+                    visited[nx - minX][ny] = true;
+                    q.push({nx, ny});
+                    cout << "Added to queue: " << nx << ", " << ny << endl;
+                }
+            }
+        }
+        
+        return false;
     };
 
     auto drawCircle = [&](int x, int y)
@@ -303,111 +425,44 @@ auto main() -> int
                     gamePosition = 0.0f;
                     fogPosition = 0.0f;
                     verticalSpeed = 0.0f;
+                    fogSpeed = 3.00f;
                     moving = {false, false, false, false};
                     playerSprite.setPosition({WIDTH / 2.f, HEIGHT - 2.f * TILE_SIZE});
                     resetTilesPositions();
+                    resetEnemiesPositions();
                 }
             }
         }
     };
 
-    auto clearTilesX = [&](int x)
+ 
+
+    auto drawClouds = [&]()
     {
-        tiles.erase(x);
+        RectangleShape fog({
+            fogPosition - gamePosition,
+            static_cast<float>(HEIGHT)
+        });
+        fog.setPosition(
+            {0, 0}
+        );
+        fog.setFillColor(Color(255, 100, 100, 200));
+        window.draw(fog);
     };
 
-    auto generateNextX = [&](int x)
+    auto checkEnemyCollision = [&]()
     {
-        cout << "Generating next x: " << x << endl;
-        clearTilesX(x);
-        for (int i = 0; i < 10; i++) {
-            int random = rand() % 2;
-            if (random == 0) {
-                addTile(x, i, grassTileSprite);
+        for (auto& [x, enemy] : enemies) {
+            for (auto& e : enemy) {
+                if (const std::optional intersection = playerSprite.getGlobalBounds().findIntersection(e.sprite.getGlobalBounds()))
+                {
+                    cout << "Enemy collision detected" << endl;
+                    isGameOver = true;
+                    isMenu = true;
+                }
             }
         }
     };
-
-    // bo jak wyskakiwalem z mapy to był przypał
-    pair<int, int> lastReachablePosition = {50, 3};
-
-    auto canReach = [&](int reachX)
-    {
-        auto [playerX, playerY] = lastReachablePosition;
-        cout << "Player position: " << playerX << ", " << playerY << endl;
-        
-        // Make visited array large enough and initialize with false
-        int minX = min(reachX, playerX) - 5;  // Add buffer on both sides
-        int maxX = max(reachX, playerX) + 5;
-        int arraySize = maxX - minX + 10;
-        vector<vector<bool>> visited(arraySize, vector<bool>(15, false));
-        
-        // Store parent of each node to reconstruct path
-        map<pair<int, int>, pair<int, int>> parent;
-        
-        queue<pair<int, int>> q;
-        q.push({playerX, playerY});
-        visited[playerX - minX][playerY] = true;
-
-        while (!q.empty()) {
-            auto [x, y] = q.front();
-            q.pop();
-            
-            if (x == reachX) {
-                cout << "Reached x: " << x << " y: " << y << endl;
-                circles.push_back({x, y});
-                lastReachablePosition = {x, y};
-                return true;
-            }
-
-            // Check all adjacent positions including backwards
-            vector<pair<int, int>> moves = {
-                {1, 0},   // right
-                {-1, 0},  // left
-                {0, 1},   // up
-                {0, -1}   // down
-            };
-
-            for (auto [dx, dy] : moves) {
-                int nx = x + dx;
-                int ny = y + dy;
-
-                // Check bounds
-                if (nx < minX || nx > maxX || ny < 0 || ny >= 10) {
-                    continue;
-                }
-                
-                // Skip if already visited
-                if (visited[nx - minX][ny]) {
-                    continue;
-                }
-
-                // Check if position is blocked by a tile
-                bool isTile = false;
-                for (auto& tile : tiles[nx]) {
-                    if (tile.y == ny) {
-                        isTile = true;
-                        break;
-                    }
-                }
-
-                // If position is free, add to queue
-                if (!isTile) {
-                    visited[nx - minX][ny] = true;
-                    parent[{nx, ny}] = {x, y};
-                    q.push({nx, ny});
-                    cout << "Added to queue: " << nx << ", " << ny << endl;
-                }
-            }
-        }
-        
-        return false;
-    };
-
-    // auto drawConnection = [&](int x1, int y1, int x2, int y2)
-    // {
-        
-    // }
 
     set<int> xToProcess;
 
@@ -417,10 +472,51 @@ auto main() -> int
             cout << "Processing front x: " << *xToProcess.begin() << endl;
             int x = *xToProcess.begin();
             xToProcess.erase(x);
-            generateNextX(x);
+            generateNextX(x);   
             while (!canReach(x)) {
                 cout << "Failed to reach " << x << endl;
                 generateNextX(x);
+            }
+        }
+    };
+
+    auto drawEnemies = [&]()
+    {
+        for (auto& [x, enemy] : enemies) {
+            for (auto& e : enemy) {
+                e.sprite.setPosition(
+                    {
+                        static_cast<float>(x * TILE_SIZE - gamePosition), 
+                        e.sprite.getPosition().y
+                    }
+                );
+                if (e.sprite.getPosition().y < HEIGHT) {
+                    window.draw(e.sprite);
+                }
+            }
+        }
+    };
+
+    auto checkEnemies = [&]()
+    {
+        auto [playerX, playerY] = getPlayerPosition();
+        if (enemies.find(playerX) != enemies.end()) {
+            cout << "Enemies found at " << playerX << endl;
+            for (auto& e : enemies[playerX]) {
+                e.isFalling = true;
+            }
+        }
+    };
+
+    auto moveEnemies = [&]()
+    {
+        for (auto& [x, enemy] : enemies) {
+            for (auto& e : enemy) {
+                if (e.isFalling) {
+                    e.sprite.move({
+                        0.f, enemySpeed * elapsed.asSeconds() * speedMultiplier
+                    });
+                }
             }
         }
     };
@@ -433,7 +529,6 @@ auto main() -> int
         }
 
         Vector2f movement{0.f, 0.f};
-        Time elapsed = clock.restart();
         while (auto const event = window.pollEvent())
         {
             if (event->is<Event::Closed>()){window.close();}
@@ -491,7 +586,7 @@ auto main() -> int
             }
         );
 
-        if (dummyPlayerSpriteY.getPosition().y > HEIGHT) {
+        if (dummyPlayerSpriteY.getPosition().y > HEIGHT + 100) {
             isGameOver = true;
             isMenu = true;
         }
@@ -510,6 +605,9 @@ auto main() -> int
                 if (const std::optional intersection = dummyPlayerSpriteY.getGlobalBounds().findIntersection(tile.sprite.getGlobalBounds()))
                 {
                     // cout << "Collision detected Y" << endl;
+                    collisionY = true;
+                }
+                if (dummyPlayerSpriteY.getPosition().y < 0) {
                     collisionY = true;
                 }
                 if (collisionX && collisionY) {
@@ -534,10 +632,21 @@ auto main() -> int
             }
         );
 
+        checkEnemyCollision();
+
+        if (gamePosition + WIDTH / 2.f < fogPosition) {
+            isGameOver = true;
+            isMenu = true;
+        }
+
         gamePosition += !collisionX ? movement.x : 0;
         gamePosition = max(gamePosition, 0.0f);
 
-        fogPosition += fogSpeed * elapsed.asSeconds() * speedMultiplier;
+        fogSpeed *= 1.0001f;
+
+        if (!disableFog) {
+            fogPosition += fogSpeed * elapsed.asSeconds() * speedMultiplier;
+        }
 
         auto [playerX, playerY] = getPlayerPosition();
 
@@ -545,7 +654,8 @@ auto main() -> int
 
         drawBackground();
         drawTiles();
-        // drawClouds();
+        drawClouds();
+        drawEnemies();
         window.draw(playerSprite);
         window.draw(positionText);
         drawCircles();
@@ -559,8 +669,11 @@ auto main() -> int
             drawMenu();
         }
         else {
+            elapsed = clock.restart();
             drawGame();
             processFrontX();
+            checkEnemies();
+            moveEnemies();
         }
 
         window.display();
