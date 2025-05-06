@@ -9,7 +9,15 @@
 // bfs crashes when i need to move back - done
 // add spikes to some tiles
 // only top tiles should be grass
+// check collision only with possible blocks
 
+//algorymt
+// może liczyć spadek do samego dołu i LastReachable ustawic na dole
+// a jesli nie ma nic na dole to jedno w prawo
+// potem dodac liczenie ile czy mozliwe bylo przeskoczyc w prawo
+// chyba trzeba bedzie zmienic na allReachablePositions dla kazdego x
+// i sprawdzac czy mozna sie dostac z jednego z nich
+// jump height na razie nic za bardzo nie zmienia -> to do ogarniecia
 
 #include <SFML/Graphics.hpp>
 #include <cmath>
@@ -43,7 +51,9 @@ struct EnemyMace {
 
 auto main() -> int
 {
-    srand(time(nullptr));
+    // srand(time(nullptr));
+    srand(1);
+    
     unsigned int const WIDTH = 960;
     unsigned int const HEIGHT = 640;
     unsigned int const TILE_SIZE = 64;
@@ -131,6 +141,7 @@ auto main() -> int
 
     float jumpForce = 15.0f;
     float isInAir = false;
+    int maxJumpHeight = 2;
 
     float verticalSpeed = 0.0f;
 
@@ -181,11 +192,10 @@ auto main() -> int
     // window.setView(view);
 
     map<int, vector<Tile>> tiles;
-    vector<pair<int, int>> circles;
+    vector<tuple<int, int, int>> circles;
     map<int, vector<EnemyMace>> enemies;
     // bo jak wyskakiwalem z mapy to był przypał
-    pair<int, int> lastReachablePosition = {50, 3};
-
+    vector<tuple<int, int, int>> lastReachablePositions = {{50 , 3, 0}}; // 50, 3
     auto addTile = [&](int x, int y, Sprite sprite)
     {
         tiles[x].push_back({y, sprite});
@@ -262,16 +272,24 @@ auto main() -> int
         cout << "Generating next x: " << x << endl;
         clearTilesX(x);
 
-        if (rand() % 10  == 0) {
-            enemies[x].push_back({0, enemyMaceSprite, false});
-            clearTilesX(x + 1); //wyczysc następną kolumnę
-        };
+        int minLastY = 10;
+        for (auto& [lastX, lastY, jumpHeight] : lastReachablePositions) {
+            if (lastY < minLastY) {
+                minLastY = lastY;
+            }
+        }
 
-        if (
-            enemies.find(x) != enemies.end() ||  //jeśli ta kolumna jest w mapie
-            enemies.find(x - 1) != enemies.end()) { //jesli poprzednia kolumna jest w mapie
+        if (enemies.find(x - 1) != enemies.end()) { //jesli poprzednia kolumna jest w mapie
+            addTile(x, 11, grassTileSprite);
             return;
         }
+
+        if (rand() % 20  == 0 && minLastY < 8) {
+            enemies[x].push_back({0, enemyMaceSprite, false});
+            clearTilesX(x + 1); //wyczysc następną kolumnę
+            addTile(x, 11, grassTileSprite);
+            return;
+        };
 
         for (int i = 0; i < 10; i++) {
             int random = rand() % 2;
@@ -291,85 +309,176 @@ auto main() -> int
         }
     };
 
+    map<int, map<int, vector<tuple<int, int>>>> paths; // path for each y for each x
+
+    auto isTile = [&](int x, int y)
+    {
+        if (tiles.find(x) == tiles.end()) return false;
+        for (const auto& tile : tiles[x]) {
+            if (tile.y == y) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto isEnemy = [&](int x) {
+        return enemies.find(x) != enemies.end() || enemies.find(x - 1) != enemies.end();
+    };
+
     //https://www.geeksforgeeks.org/breadth-first-search-or-bfs-for-a-graph/
     auto canReach = [&](int reachX)
     {
-        auto [playerX, playerY] = lastReachablePosition;
-        cout << "Player position: " << playerX << ", " << playerY << endl;
-        
-        // Make visited array large enough and initialize with false
-        int minX = min(reachX, playerX) - 5;  // Add buffer on both sides
-        int maxX = max(reachX, playerX) + 5;
-        int arraySize = maxX - minX + 10;
-        vector<vector<bool>> visited(arraySize, vector<bool>(15, false));
-        
-        queue<pair<int, int>> q;
-        q.push({playerX, playerY});
-        visited[playerX - minX][playerY] = true;
+        cout << "Can reach: " << reachX << " " << lastReachablePositions.size() << endl;
+        vector<tuple<int, int, int>> newLastReachablePositions;
 
-        while (!q.empty()) {
-            auto [x, y] = q.front();
-            q.pop();
+        cout << "New last reachable positions: " << newLastReachablePositions.size() << endl;
+
+        for (auto& [playerX, playerY, jumpHeight] : lastReachablePositions) {
             
-            if (x == reachX) {
-                cout << "Reached x: " << x << " y: " << y << endl;
-                circles.push_back({x, y});
-                lastReachablePosition = {x, y};
-                return true;
-            }
+            // i
+            // cout << "Checking for: "
 
-            // Check all adjacent positions including backwards
-            vector<pair<int, int>> moves = {
-                {1, 0},   // right
-                {-1, 0},  // left
-                {0, 1},   // up
-                {0, -1}   // down
-            };
+            // cout << "Player position: " << playerX << ", " << playerY << endl;
+            
+            // Make visited array large enough and initialize with false
+            int minX = min(reachX, playerX) - 5;
+            int maxX = max(reachX, playerX) + 5;
+            int arraySize = maxX - minX + 10;
+            vector<vector<vector<bool>>> visited(arraySize, vector<vector<bool>>(15, vector<bool>(maxJumpHeight + 2, false)));
+            
+            queue<tuple<int, int, int, vector<tuple<int, int>>>> q;
+            q.push({playerX, playerY, jumpHeight, {
+                {playerX, playerY}
+            }});
+            visited[playerX - minX][playerY][0] = true;
 
-            for (auto [dx, dy] : moves) {
-                int nx = x + dx;
-                int ny = y + dy;
-
-                // Check bounds
-                if (nx < minX || nx > maxX || ny <= 0 || ny >= 10) {
-                    continue;
-                }
+            
+            while (!q.empty()) {
+                auto [x, y, jumpHeight, path] = q.front();
+                q.pop();
                 
-                // Skip if already visited
-                if (visited[nx - minX][ny]) {
-                    continue;
-                }
+                if (x == reachX) {
+                    // cout << "Reached x: " << x << " y: " << y << endl;
 
-                // Check if position is blocked by a tile
-                bool isTile = false;
-                for (auto& tile : tiles[nx]) {
-                    if (tile.y == ny) {
-                        isTile = true;
-                        break;
+                    // bool enemyOnTop = isEnemy(x);
+
+                    // cout << "Enemy on top: " << enemyOnTop << endl;
+
+                    // if (!enemyOnTop) {
+                    //     if (y > 0 && !isTile(x, y - 1)) {
+                    //         y--;
+                    //         path.push_back({x, y});
+                    //     }
+
+                    //     if (y == 0) {
+                    //         continue;
+                    //     }
+                    // }
+
+                    if (playerX == 53 && playerY == 3) {
+                        cout << "Found path for " << playerX << ", " << playerY << endl;
+                        for (auto& [x, y] : path) {
+                            cout << "(" << x << ", " << y << ") ";
+                        }
+                        cout << endl;
+                    }
+
+                    if (paths.find(playerX) == paths.end() || paths[playerX].find(playerY) == paths[playerX].end()) {
+                        paths[playerX][playerY] = path;
+                    };
+
+                    bool found = false;
+                    for (auto& [lx, ly, ljumpHeight] : newLastReachablePositions) {
+                        if (lx == x && ly == y) {                         
+                            // ljumpHeight = min(jumpHeight, ljumpHeight);
+                            if (jumpHeight < ljumpHeight) {
+                                ljumpHeight = jumpHeight;
+                                for (auto& [cx, cy, cjumpHeight] : circles) {
+                                    if (cx == x && cy == y) {
+                                        cjumpHeight = jumpHeight;
+                                    }
+                                }
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        newLastReachablePositions.push_back({x, y, jumpHeight});
+                        circles.push_back({x, y, jumpHeight});
                     }
                 }
 
-                bool isEnemy = false;
-                if (enemies.find(nx) != enemies.end() || enemies.find(nx - 1) != enemies.end()) {
-                    if (ny >= 8 && ny <= 10) {
-                        isEnemy = true;
-                        cout << "Enemy found at " << nx << endl;
-                        break;
+                // Check all adjacent positions including backwards
+                vector<pair<int, int>> moves = {
+                    {1, 0},   // right
+                    {-1, 0},  // left
+                    {0, 1},   // up
+                    {0, -1},
+                    // {1, 1},
+                    // {-1, 1},
+                };
+
+                for (auto [dx, dy] : moves) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+
+                    int newJumpHeight = 
+                        dy > 0 ? 
+                        jumpHeight + 1 :  // jezeli skacze to +1
+                        isTile(nx, ny - 1) ? 0 :  // jezeli ide w bok lub dol i jest tile to 0
+                        dx != 0 ? 
+                        isTile(x, y - 1) ? 0 : jumpHeight + 1 : //jezeli ide w bok to jezeli podemna jest tile to 0
+                        jumpHeight
+                    ; 
+                    // Moze zmienic jumpHeight na float i dodawac 0.5 jezeli ide w bok bo skok to jest 2,5 a nie 2
+                
+                    // Check bounds
+                    if (nx < minX || nx > reachX || ny <= 0 || ny >= 10) {
+                        continue;
                     }
-                }
-                // If position is free, add to queue
-                if (!isTile && !isEnemy) {
-                    visited[nx - minX][ny] = true;
-                    q.push({nx, ny});
-                    cout << "Added to queue: " << nx << ", " << ny << endl;
+                    
+                    if (newJumpHeight > maxJumpHeight) {
+                        continue;
+                    }
+                    
+                    // Skip if already visited
+                    if (visited[nx - minX][ny][newJumpHeight]) {
+                        continue;
+                    }
+
+                    // Check if position is blocked by a tile
+
+                    // for (auto& tile : tiles[nx]) {
+                    //     if (tile.y == ny) {
+                    //         isTile = true;
+                    //         break;
+                    //     }
+                    // }
+                    
+                    // If position is free, add to queue
+                    if (!isTile(nx, ny) && (!isEnemy(nx) || ny < 8)) {
+                        visited[nx - minX][ny][newJumpHeight] = true;
+                        vector<tuple<int, int>> newPath = path;
+                        newPath.push_back({nx, ny});
+                        q.push({nx, ny, newJumpHeight, newPath});
+                        if (playerX == 53 && playerY == 3) {
+                            cout << "Added to queue: " << nx << ", " << ny << endl;
+                        }
+                    }
                 }
             }
+        }
+        if (newLastReachablePositions.size() > 0) {
+            lastReachablePositions = newLastReachablePositions;
+            return true;
         }
         
         return false;
     };
 
-    auto drawCircle = [&](int x, int y)
+    auto drawCircle = [&](int x, int y, int jumpHeight)
     {
         CircleShape circle(10);
         circle.setPosition({
@@ -377,13 +486,113 @@ auto main() -> int
             static_cast<float>(HEIGHT - (y + 1) * TILE_SIZE + TILE_SIZE / 2 - 10)
         });
         circle.setFillColor(Color::Red);
+
+        Text text(font);
+        text.setCharacterSize(15);
+        text.setString(to_string(jumpHeight));
+        text.setPosition({
+            static_cast<float>(x * TILE_SIZE - gamePosition + TILE_SIZE / 2 - text.getGlobalBounds().size.x / 2), 
+            static_cast<float>(HEIGHT - (y + 1) * TILE_SIZE + TILE_SIZE / 2 - text.getGlobalBounds().size.y / 2)
+        });
+
         window.draw(circle);
+        window.draw(text);
+    };
+
+    auto getAngle = [&](int x1, int y1, int x2, int y2)
+    {
+        float angle = atan2(y2 - y1, x2 - x1);
+        return angle;
+    };
+
+    auto drawPath = [&](int x)
+    {
+        if (paths.find(x) == paths.end() || paths[x].size() == 0) {
+            return;
+        }
+
+        auto [playerX, playerY] = getPlayerPosition();
+
+        int minYDistance = 1000;
+        vector<tuple<int, int>> path;
+
+        // cout << "Paths: " << paths[x].size() << endl;
+        // for (auto& [y, pathX] : paths[x]) {
+        //     cout << "Y: " << y << " Path: " << pathX.size() << endl;
+        //     for (auto& [x, y] : pathX) {
+        //         cout << "(" << x << ", " << y << ") ";
+        //     }
+        //     cout << endl;
+        // }
+
+        //find path that is closest to player
+        for (auto& [y, pathX] : paths[x]) {
+            int yDistance = abs(y - playerY);
+            if (yDistance < minYDistance) {
+                minYDistance = yDistance;
+                path = pathX;
+            }
+        }
+
+
+        for (int i = 0; i < path.size() - 1; i++) {
+            auto [x1, y1] = path[i];
+            auto [x2, y2] = path[i + 1];
+
+            float length = sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+
+            RectangleShape rectangle;
+            rectangle.setSize({
+                length * TILE_SIZE,
+                2
+            });
+            rectangle.setPosition({
+                static_cast<float> (x1 * TILE_SIZE - gamePosition + TILE_SIZE / 2), 
+                static_cast<float> (HEIGHT - (y1 + 1) * TILE_SIZE + TILE_SIZE / 2)
+            });
+            rectangle.setFillColor(Color::Blue);
+
+            float angle = getAngle(x1, y1, x2, y2);
+
+            // if (y2 > y1 && x2 > x1) {
+            //     angle = -45;
+            // }
+
+            // if (y2 > y1 && x2 < x1) {
+            //     angle = 135;
+            // }
+
+            // if (y2 > y1) { //up
+            //     angle = -90;
+            // }
+            // else if (y2 < y1) { //down
+            //     angle = 90;
+            // }
+
+            // if (x2 > x1) { //right
+            //     angle = 0;
+            // }
+            // else if (x2 < x1) { //left
+            //     angle = 180;
+            // }
+
+
+
+            // cout << "Angle: " << angle << endl;
+            rectangle.rotate(
+                radians(
+                    -angle
+                )
+            );
+
+            window.draw(rectangle);
+        }
     };
 
     auto drawCircles = [&]()
     {
-        for (auto& [x, y] : circles) {
-            drawCircle(x, y);
+        for (auto& [x, y, jumpHeight] : circles) {
+            drawCircle(x, y, jumpHeight);
         }
     };
 
@@ -659,7 +868,10 @@ auto main() -> int
         window.draw(playerSprite);
         window.draw(positionText);
         drawCircles();
+        drawPath(playerX);
     };
+
+    // canReach(15);
 
     while (window.isOpen())
     {
