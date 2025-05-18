@@ -16,8 +16,23 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(SFML)
 
-add_executable(gra2D 
-    main.cpp
+add_executable(gra2D
+        src/TileManager.cpp
+        src/Assets.cpp
+        src/Player.cpp
+        src/EnemyMace.cpp
+        src/PathFinding.cpp
+        src/Game.cpp
+        main.cpp
+        include/TileManager.hpp
+        include/Constants.hpp
+        include/Assets.hpp
+        include/LevelLoader.hpp
+        include/Player.hpp
+        include/Game.hpp
+        include/PathFinding.hpp
+        include/EnemyMace.hpp
+        include/LevelSaver.hpp
 )
 
 target_include_directories(gra2D PRIVATE include)

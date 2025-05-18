@@ -1,4 +1,4 @@
-src/
 build/
-include/
 assets_full/
+.idea/
+.vs/
